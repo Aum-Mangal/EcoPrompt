@@ -1,0 +1,3 @@
+node_modules/
+popup-src/node_modules/
+*.DS_Store

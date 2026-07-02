@@ -1,0 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+}
+
+body {
+  width: 380px;
+  min-width: 380px;
+  max-width: 380px;
+  background: #02060f; /* Deep cosmic blue */
+  overflow-x: hidden;
+}
+
+#root {
+  width: 380px;
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.25); }
+
+/* The Revolving Earth Animation */
+@keyframes revolve {
+  0% { background-position: 0% center; }
+  100% { background-position: -200% center; }
+}
+
+.earth-container {
+  position: absolute;
+  top: -120px; /* Pushed up like the Earth Wallet image */
+  left: 50%;
+  transform: translateX(-50%);
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  /* High-res public domain earth map */
+  background: url('https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Land_ocean_ice_cloud_2048.jpg/1024px-Land_ocean_ice_cloud_2048.jpg');
+  background-size: 200% 100%;
+  animation: revolve 60s linear infinite;
+  /* 3D Shadows: Inner dark shadow for night side, inner light for atmosphere, outer glow */
+  box-shadow: 
+    inset -40px -40px 60px rgba(2, 6, 15, 0.95), 
+    inset 10px 10px 30px rgba(255, 255, 255, 0.2), 
+    0 0 60px rgba(56, 189, 248, 0.15);
+  z-index: 0;
+}
+
+/* Fade out the bottom of the earth into the background */
+.earth-fade {
+  position: absolute;
+  top: -120px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  background: linear-gradient(to bottom, transparent 30%, #02060f 95%);
+  z-index: 1;
+  pointer-events: none;
+}
+
+button:focus { outline: none; }
+button:hover { opacity: 0.85; }
