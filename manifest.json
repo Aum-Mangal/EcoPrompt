@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EcoPrompt — AI Environmental Impact Tracker",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "See the real environmental cost of every AI response — water, energy, and CO2 estimated in real time.",
   "permissions": [
     "storage",
@@ -9,18 +9,34 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["content/chatgpt.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "utils/calculator.js",
+        "content/chatgpt.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["content/claude.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "utils/calculator.js",
+        "content/claude.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["content/gemini.js"],
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "utils/calculator.js",
+        "content/gemini.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -28,7 +44,7 @@
     "service_worker": "background/worker.js"
   },
   "action": {
-  "default_popup": "popup-src/dist/index.html",
-  "default_title": "EcoPrompt"
-}
+    "default_popup": "popup-src/dist/index.html",
+    "default_title": "EcoPrompt"
+  }
 }
