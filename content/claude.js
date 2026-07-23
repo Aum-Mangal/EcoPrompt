@@ -1,92 +1,140 @@
-console.log("EcoPrompt: Claude content script loaded")
+// EcoPrompt: Claude Content Script (v2.0.0)
+console.log("EcoPrompt: Claude content script loaded (v2.0.0)")
 
-function countTokens(text) {
-  if (!text) return 0
-  return Math.ceil(text.length / 4)
-}
-
-const FACTORS = {
-  energyPerToken: 0.0000025,
-  carbonIntensity: 0.386,
-  waterIntensity: 1.8,
-}
-
-function calculateEmissions(tokens) {
-  const energy = tokens * FACTORS.energyPerToken
-  const co2 = energy * FACTORS.carbonIntensity
-  const water = energy * FACTORS.waterIntensity * 1000
-  return {
-    platform: "claude",
-    tokens,
-    energy: parseFloat(energy.toFixed(6)),
-    co2: parseFloat(co2.toFixed(6)),
-    water: parseFloat(water.toFixed(4)),
+function getCalculator() {
+  if (typeof globalThis !== "undefined" && globalThis.EcoPromptCalculator) {
+    return globalThis.EcoPromptCalculator
   }
+  return {
+    countTokens: (text) => (text ? Math.ceil(text.trim().length / 4) : 0),
+    calculateEmissions: (tokens, platform) => {
+      const energy = tokens * 0.0000025
+      const co2 = energy * 0.386
+      const water = energy * 1.8 // mL (1.8 mL / Wh)
+      return {
+        platform: platform || "claude",
+        tokens,
+        energy: parseFloat(energy.toFixed(6)),
+        co2: parseFloat(co2.toFixed(6)),
+        water: parseFloat(water.toFixed(4)),
+      }
+    }
+  }
+}
+
+function extractCleanText(element) {
+  if (!element) return ""
+  const clone = element.cloneNode(true)
+  clone.querySelectorAll(".eco-prompt-badge, button, [role='button'], svg, .copy-button").forEach(node => node.remove())
+  return clone.innerText ? clone.innerText.trim() : ""
 }
 
 function createBadge(emissions) {
   const badge = document.createElement("div")
+  badge.className = "eco-prompt-badge"
+  badge.setAttribute("data-eco-badge", "true")
   badge.style.cssText = `
     display: inline-flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
     align-items: center;
-    background: #0f1a0f;
-    border: 1px solid #1a3a1a;
+    background: rgba(15, 26, 15, 0.85);
+    border: 1px solid rgba(111, 207, 151, 0.25);
     border-radius: 8px;
-    padding: 6px 12px;
+    padding: 5px 10px;
     margin-top: 8px;
-    font-size: 12px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 500;
     color: #6fcf97;
-    font-family: -apple-system, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.4;
+    user-select: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+    backdrop-filter: blur(8px);
+    width: fit-content;
   `
-  badge.innerHTML = `
-    <span>💧 ${emissions.water.toFixed(2)} ml</span>
-    <span>⚡ ${(emissions.energy * 1000).toFixed(4)} mWh</span>
-    <span>🌿 ${(emissions.co2 * 1000).toFixed(4)} mg CO₂</span>
-    <span style="color:#444;font-size:10px">${emissions.tokens} tokens</span>
-  `
+  updateBadgeContent(badge, emissions)
   return badge
 }
 
-function processResponse(el) {
-  if (el.dataset.ecoProcessed) return
-  el.dataset.ecoProcessed = "true"
+function updateBadgeContent(badge, emissions) {
+  const mWh = (emissions.energy * 1000).toFixed(3)
+  const mgCO2 = (emissions.co2 * 1000).toFixed(3)
+  const mLWater = emissions.water.toFixed(2)
 
-  const text = el.innerText
-  if (!text || text.length < 10) return
+  badge.innerHTML = `
+    <span title="Water Footprint">💧 ${mLWater} mL</span>
+    <span title="Energy Consumed">⚡ ${mWh} mWh</span>
+    <span title="Carbon Emissions">🌿 ${mgCO2} mg CO₂</span>
+    <span style="color: #64748b; font-size: 10px;" title="Estimated Tokens">${emissions.tokens.toLocaleString()} tok</span>
+  `
+}
 
-  const tokens = countTokens(text)
-  const emissions = calculateEmissions(tokens)
+let isInitialScan = true
+
+function processClaudeTurn(el) {
+  const calc = getCalculator()
+  const isStreaming = el.getAttribute("data-is-streaming") === "true"
+  const text = extractCleanText(el)
+
+  if (!text || text.length < 8) return
+
+  const tokens = calc.countTokens(text)
+  if (tokens === 0) return
+
+  const emissions = calc.calculateEmissions(tokens, "claude")
   emissions.timestamp = Date.now()
 
-  const badge = createBadge(emissions)
-  el.appendChild(badge)
+  let badge = el.querySelector(".eco-prompt-badge")
+  if (!badge) {
+    badge = createBadge(emissions)
+    el.appendChild(badge)
+  } else {
+    updateBadgeContent(badge, emissions)
+  }
 
-  chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions })
-  console.log("🌿 EcoPrompt Claude badge injected:", emissions)
+  // Prevent saving historical messages when opening past chats
+  if (isInitialScan && !el.dataset.ecoSaved) {
+    el.dataset.ecoSaved = "historical"
+    return
+  }
+
+  // Save when generation completes
+  if (!isStreaming && (!el.dataset.ecoSaved || el.dataset.ecoSaved === "pending")) {
+    el.dataset.ecoSaved = "true"
+    chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions })
+  } else if (isStreaming) {
+    el.dataset.ecoSaved = "pending"
+  }
 }
 
 function scanForResponses() {
-  const responses = document.querySelectorAll('[data-is-streaming="false"]')
-  console.log("EcoPrompt: Found", responses.length, "Claude responses")
-  responses.forEach(el => processResponse(el))
+  const responses = document.querySelectorAll('[data-is-streaming]')
+  responses.forEach(el => processClaudeTurn(el))
+
+  if (isInitialScan) {
+    isInitialScan = false
+  }
 }
 
+let typingTimer
 function init() {
-  // Scan after delays to catch responses at different load times
-  setTimeout(scanForResponses, 1000)
-  setTimeout(scanForResponses, 3000)
-  setTimeout(scanForResponses, 5000)
+  scanForResponses()
 
   const observer = new MutationObserver(() => {
-    scanForResponses()
+    clearTimeout(typingTimer)
+    typingTimer = setTimeout(() => {
+      scanForResponses()
+    }, 250)
   })
 
   observer.observe(document.body, {
     childList: true,
     subtree: true,
+    characterData: true,
     attributes: true,
-    attributeFilter: ['data-is-streaming']
+    attributeFilter: ["data-is-streaming"]
   })
 }
 
