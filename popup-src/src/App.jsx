@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import { Line } from "react-chartjs-2"
 import {
   Chart as ChartJS,
@@ -17,6 +17,9 @@ const PLATFORMS = {
   claude:  { name: "Claude",  color: "#a78bfa", bg: "rgba(167,139,250,0.08)" },
   gemini:  { name: "Gemini",  color: "#34d399", bg: "rgba(52,211,153,0.08)" },
 }
+
+// Smartphone battery baseline: 12.0 Wh (standard ~3,300–4,000 mAh @ 3.8V)
+const SMARTPHONE_BATTERY_WH = 12.0
 
 function GlassCard({ children, style = {} }) {
   return (
@@ -51,49 +54,103 @@ function MiniLabel({ children }) {
 export default function App() {
   const [history, setHistory] = useState([])
   const [tab, setTab] = useState("today")
+  const [currentTime, setCurrentTime] = useState(0)
+  const [showConfirmClear, setShowConfirmClear] = useState(false)
 
+  // Fetch data from storage on mount
   useEffect(() => {
-    chrome.storage.local.get(["history"], (result) => {
-      setHistory(result.history || [])
-    })
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(["history"], (result) => {
+        setHistory(Array.isArray(result.history) ? result.history : [])
+        setCurrentTime(Date.now())
+      })
+    } else {
+      // Dev preview fallback when viewing in browser outside extension
+      const timer = setTimeout(() => {
+        const now = Date.now()
+        setHistory([
+          { platform: "chatgpt", tokens: 1250, energy: 0.00375, co2: 0.00145, water: 0.00675, timestamp: now - 3600000 },
+          { platform: "claude",  tokens: 2100, energy: 0.00525, co2: 0.00203, water: 0.00945, timestamp: now - 7200000 },
+          { platform: "gemini",  tokens: 1600, energy: 0.00448, co2: 0.00173, water: 0.00806, timestamp: now - 14400000 },
+        ])
+        setCurrentTime(now)
+      }, 0)
+      return () => clearTimeout(timer)
+    }
   }, [])
 
-  const now = Date.now()
-  const filtered = history.filter(h => {
-    if (tab === "today") return h.timestamp > now - 86400000
-    if (tab === "week")  return h.timestamp > now - 604800000
-    return true
-  })
+  const handleClearHistory = useCallback(() => {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ history: [] }, () => {
+        setHistory([])
+        setShowConfirmClear(false)
+      })
+    } else {
+      setHistory([])
+      setShowConfirmClear(false)
+    }
+  }, [])
 
-  const totals = filtered.reduce((acc, h) => ({
-    water: acc.water + h.water,
-    energy: acc.energy + h.energy,
-    co2: acc.co2 + h.co2,
-    tokens: acc.tokens + h.tokens,
-  }), { water: 0, energy: 0, co2: 0, tokens: 0 })
+  // Filter history based on active time tab
+  const filtered = useMemo(() => {
+    if (!currentTime) return history
+    return history.filter(h => {
+      const ts = h.timestamp || 0
+      if (tab === "today") return ts > currentTime - 86400000
+      if (tab === "week")  return ts > currentTime - 604800000
+      return true
+    })
+  }, [history, tab, currentTime])
 
-  const platforms = {}
-  filtered.forEach(h => {
-    if (!platforms[h.platform]) platforms[h.platform] = { count: 0, water: 0 }
-    platforms[h.platform].count++
-    platforms[h.platform].water += h.water
-  })
+  // Aggregate totals
+  const totals = useMemo(() => {
+    return filtered.reduce((acc, h) => ({
+      water: acc.water + (h.water || 0),
+      energy: acc.energy + (h.energy || 0),
+      co2: acc.co2 + (h.co2 || 0),
+      tokens: acc.tokens + (h.tokens || 0),
+    }), { water: 0, energy: 0, co2: 0, tokens: 0 })
+  }, [filtered])
 
-  const last7Days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(now - (6 - i) * 86400000)
-    return d.toLocaleDateString("en", { weekday: "short" })
-  })
+  // Platform network breakdown
+  const platforms = useMemo(() => {
+    const map = {}
+    filtered.forEach(h => {
+      const p = (h.platform || "chatgpt").toLowerCase()
+      if (!map[p]) map[p] = { count: 0, water: 0 }
+      map[p].count++
+      map[p].water += (h.water || 0)
+    })
+    return map
+  }, [filtered])
 
-  const chartData = {
-    labels: last7Days,
-    datasets: Object.entries(PLATFORMS).map(([key, p]) => ({
+  // Calendar-day aligned 7-day timeline
+  const { chartData, chartOptions } = useMemo(() => {
+    if (!currentTime) {
+      return {
+        chartData: { labels: [], datasets: [] },
+        chartOptions: { responsive: true }
+      }
+    }
+
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(currentTime - (6 - i) * 86400000)
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+      const dayEnd = dayStart + 86400000
+      return {
+        label: d.toLocaleDateString("en", { weekday: "short" }),
+        start: dayStart,
+        end: dayEnd
+      }
+    })
+
+    const datasets = Object.entries(PLATFORMS).map(([key, p]) => ({
       label: p.name,
-      data: last7Days.map((_, i) => {
-        const dayStart = now - (6 - i) * 86400000
-        return history
-          .filter(h => h.platform === key && h.timestamp >= dayStart && h.timestamp < dayStart + 86400000)
-          .reduce((sum, h) => sum + h.water, 0)
-          .toFixed(3)
+      data: days.map(d => {
+        const sum = history
+          .filter(h => (h.platform || "").toLowerCase() === key && h.timestamp >= d.start && h.timestamp < d.end)
+          .reduce((acc, h) => acc + (h.water || 0), 0)
+        return Number(sum.toFixed(3))
       }),
       borderColor: p.color,
       backgroundColor: p.bg,
@@ -104,38 +161,49 @@ export default function App() {
       pointHoverBackgroundColor: p.color,
       borderWidth: 1.5,
     }))
-  }
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        backgroundColor: "rgba(2,6,15,0.95)",
-        borderColor: "rgba(255,255,255,0.08)",
-        borderWidth: 1,
-        titleColor: "#e2e8f0",
-        bodyColor: "#64748b",
-        padding: 10,
-        cornerRadius: 10,
-      }
-    },
-    scales: {
-      x: {
-        ticks: { color: "#334155", font: { size: 9 } },
-        grid: { display: false },
-        border: { display: false }
+    const data = {
+      labels: days.map(d => d.label),
+      datasets
+    }
+
+    const options = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "rgba(2,6,15,0.95)",
+          borderColor: "rgba(255,255,255,0.08)",
+          borderWidth: 1,
+          titleColor: "#e2e8f0",
+          bodyColor: "#64748b",
+          padding: 10,
+          cornerRadius: 10,
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw} mL`
+          }
+        }
       },
-      y: {
-        ticks: { color: "#334155", font: { size: 9 } },
-        grid: { color: "rgba(255,255,255,0.02)" },
-        border: { display: false }
+      scales: {
+        x: {
+          ticks: { color: "#334155", font: { size: 9 } },
+          grid: { display: false },
+          border: { display: false }
+        },
+        y: {
+          ticks: { color: "#334155", font: { size: 9 } },
+          grid: { color: "rgba(255,255,255,0.02)" },
+          border: { display: false }
+        }
       }
     }
-  }
 
-  const phonePct = ((totals.energy / 0.012) * 100).toFixed(1)
+    return { chartData: data, chartOptions: options }
+  }, [history, currentTime])
+
+  // Realistic phone charge benchmark: 12.0 Wh
+  const phonePct = ((totals.energy / SMARTPHONE_BATTERY_WH) * 100).toFixed(2)
 
   return (
     <div style={{
@@ -149,11 +217,11 @@ export default function App() {
       overflowX: "hidden",
     }}>
 
-      {/* Earth */}
+      {/* Earth visual */}
       <div className="earth-container" />
       <div className="earth-fade" />
 
-      {/* Content */}
+      {/* Content wrapper */}
       <div style={{ position: "relative", zIndex: 10 }}>
 
         {/* Header */}
@@ -164,36 +232,107 @@ export default function App() {
           paddingTop: "20px",
           marginBottom: "130px"
         }}>
-          <div style={{
-            fontSize: "13px",
-            fontWeight: "700",
-            color: "rgba(255,255,255,0.9)",
-            letterSpacing: "0.12em",
-            textTransform: "uppercase"
-          }}>EcoPrompt</div>
-
-          <div style={{
-            background: "rgba(56,189,248,0.08)",
-            border: "1px solid rgba(56,189,248,0.15)",
-            borderRadius: "20px",
-            padding: "4px 12px",
-            fontSize: "10px",
-            fontWeight: "600",
-            color: "#38bdf8",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px"
-          }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span style={{
-              width: "5px", height: "5px",
-              background: "#38bdf8",
-              borderRadius: "50%",
-              boxShadow: "0 0 6px #38bdf8",
-              display: "inline-block"
-            }} />
-            {filtered.length} Responses
+              fontSize: "13px",
+              fontWeight: "700",
+              color: "rgba(255,255,255,0.9)",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase"
+            }}>EcoPrompt</span>
+            <span style={{
+              fontSize: "9px",
+              color: "#38bdf8",
+              background: "rgba(56,189,248,0.12)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+              fontWeight: "600"
+            }}>v2.0</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{
+              background: "rgba(56,189,248,0.08)",
+              border: "1px solid rgba(56,189,248,0.15)",
+              borderRadius: "20px",
+              padding: "4px 10px",
+              fontSize: "10px",
+              fontWeight: "600",
+              color: "#38bdf8",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px"
+            }}>
+              <span style={{
+                width: "5px", height: "5px",
+                background: "#38bdf8",
+                borderRadius: "50%",
+                boxShadow: "0 0 6px #38bdf8",
+                display: "inline-block"
+              }} />
+              {filtered.length} {filtered.length === 1 ? "Response" : "Responses"}
+            </div>
+
+            {history.length > 0 && (
+              <button
+                onClick={() => setShowConfirmClear(prev => !prev)}
+                title="Clear tracking history"
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: "20px",
+                  padding: "4px 8px",
+                  color: "#64748b",
+                  fontSize: "10px",
+                  cursor: "pointer",
+                  transition: "all 0.2s"
+                }}
+              >
+                Clear
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Clear Confirmation Banner */}
+        {showConfirmClear && (
+          <GlassCard style={{ padding: "10px 14px", marginBottom: "16px", background: "rgba(239, 68, 68, 0.08)", borderColor: "rgba(239, 68, 68, 0.25)" }}>
+            <div style={{ fontSize: "11px", color: "#fca5a5", marginBottom: "8px", textAlign: "center" }}>
+              Are you sure you want to reset all tracked emissions?
+            </div>
+            <div style={{ display: "flex", gap: "8px", justifyContent: "center" }}>
+              <button
+                onClick={handleClearHistory}
+                style={{
+                  background: "#ef4444",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "8px",
+                  padding: "4px 12px",
+                  fontSize: "10px",
+                  fontWeight: "600",
+                  cursor: "pointer"
+                }}
+              >
+                Yes, Reset
+              </button>
+              <button
+                onClick={() => setShowConfirmClear(false)}
+                style={{
+                  background: "rgba(255,255,255,0.08)",
+                  color: "#94a3b8",
+                  border: "none",
+                  borderRadius: "8px",
+                  padding: "4px 12px",
+                  fontSize: "10px",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </GlassCard>
+        )}
 
         {/* Hero metric */}
         <div style={{ textAlign: "center", marginBottom: "28px" }}>
@@ -225,7 +364,7 @@ export default function App() {
             color: "#334155",
             marginTop: "8px"
           }}>
-            {phonePct}% of a smartphone charge
+            {phonePct}% of a full smartphone charge (12 Wh)
           </div>
         </div>
 
@@ -259,11 +398,11 @@ export default function App() {
           {[
             { label: "Energy",  value: (totals.energy * 1000).toFixed(2), unit: "mWh", color: "#fbbf24" },
             { label: "Carbon",  value: (totals.co2 * 1000).toFixed(2),    unit: "mg",  color: "#34d399" },
-            { label: "Tokens",  value: totals.tokens,                      unit: "tok", color: "#a78bfa" },
+            { label: "Tokens",  value: totals.tokens.toLocaleString(),    unit: "tok", color: "#a78bfa" },
           ].map(s => (
             <GlassCard key={s.label} style={{ flex: 1, padding: "14px 10px", textAlign: "center" }}>
               <div style={{
-                fontSize: "18px",
+                fontSize: "17px",
                 fontWeight: "600",
                 color: s.color,
                 letterSpacing: "-0.02em",
@@ -281,7 +420,7 @@ export default function App() {
           <GlassCard style={{ padding: "16px", marginBottom: "12px" }}>
             <MiniLabel>Network Distribution</MiniLabel>
             {Object.entries(platforms).map(([key, data]) => {
-              const p = PLATFORMS[key]
+              const p = PLATFORMS[key] || { name: key, color: "#94a3b8" }
               const pct = totals.water > 0 ? (data.water / totals.water) * 100 : 0
               return (
                 <div key={key} style={{ marginBottom: "12px" }}>
@@ -324,11 +463,10 @@ export default function App() {
           </GlassCard>
         )}
 
-        {/* Chart */}
+        {/* Timeline Chart */}
         {history.length > 0 && (
           <GlassCard style={{ padding: "16px", marginBottom: "16px" }}>
-            <MiniLabel>Usage Timeline — mL</MiniLabel>
-            {/* Custom legend */}
+            <MiniLabel>7-Day Usage Timeline — mL Water</MiniLabel>
             <div style={{ display: "flex", gap: "14px", marginBottom: "12px" }}>
               {Object.entries(PLATFORMS).map(([key, p]) => (
                 <div key={key} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
@@ -346,12 +484,12 @@ export default function App() {
         {filtered.length === 0 && (
           <div style={{
             textAlign: "center",
-            color: "#1e293b",
+            color: "#334155",
             fontSize: "12px",
             padding: "20px 0",
             lineHeight: 1.7
           }}>
-            Start a conversation on ChatGPT,<br />Claude, or Gemini to track your impact.
+            Start a conversation on ChatGPT,<br />Claude, or Gemini to track your real-time impact.
           </div>
         )}
 
@@ -361,7 +499,7 @@ export default function App() {
           textAlign: "center",
           letterSpacing: "0.03em"
         }}>
-          Inference estimates · Patterson et al. 2021 · Luccioni et al. 2023
+          Inference benchmarks · Patterson et al. 2021 · Li et al. 2023 · Luccioni et al. 2023
         </div>
       </div>
     </div>
