@@ -1,4 +1,13 @@
 {
+  "name": "ecoprompt",
+  "version": "2.0.0",
+  "description": "EcoPrompt — AI Environmental Impact Tracker Chrome Extension",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix popup-src run build",
+    "lint": "npm --prefix popup-src run lint",
+    "dev": "npm --prefix popup-src run dev"
+  },
   "dependencies": {
     "chart.js": "^4.5.1",
     "react-chartjs-2": "^5.3.1"
