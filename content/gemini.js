@@ -1,5 +1,5 @@
 // EcoPrompt: Gemini Content Script (v2.0.0)
-console.log("EcoPrompt: Gemini content script loaded (v2.0.0)")
+console.log("🌿 EcoPrompt: Gemini content script loaded (v2.0.0)")
 
 function getCalculator() {
   if (typeof globalThis !== "undefined" && globalThis.EcoPromptCalculator) {
@@ -13,6 +13,7 @@ function getCalculator() {
       const water = energy * 1.8 // mL (1.8 mL / Wh)
       return {
         platform: platform || "gemini",
+        platformName: "Gemini",
         tokens,
         energy: parseFloat(energy.toFixed(6)),
         co2: parseFloat(co2.toFixed(6)),
@@ -22,11 +23,25 @@ function getCalculator() {
   }
 }
 
-function extractCleanText(element) {
-  if (!element) return ""
-  const clone = element.cloneNode(true)
-  clone.querySelectorAll(".eco-prompt-badge, button, [role='button'], svg, .source-citation").forEach(node => node.remove())
-  return clone.innerText ? clone.innerText.trim() : ""
+function getCleanMessageText(el) {
+  if (!el) return ""
+  const target = el.querySelector(".markdown") || el
+  const raw = target.innerText || target.textContent || ""
+  return raw.replace(/💧[\s\S]*?tok(ens)?/gi, "").trim()
+}
+
+function getBadgeHTML(emissions) {
+  const water = (emissions.water || 0).toFixed(2)
+  const energyMWh = ((emissions.energy || 0) * 1000).toFixed(3)
+  const co2Mg = ((emissions.co2 || 0) * 1000).toFixed(3)
+  const tokens = (emissions.tokens || 0).toLocaleString()
+
+  return `
+    <span title="Water Footprint">💧 ${water} mL</span>
+    <span title="Energy Consumed">⚡ ${energyMWh} mWh</span>
+    <span title="Carbon Emissions">🌿 ${co2Mg} mg CO₂</span>
+    <span style="color: #64748b; font-size: 10px;" title="Estimated Tokens">${tokens} tok</span>
+  `
 }
 
 function createBadge(emissions) {
@@ -34,53 +49,45 @@ function createBadge(emissions) {
   badge.className = "eco-prompt-badge"
   badge.setAttribute("data-eco-badge", "true")
   badge.style.cssText = `
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    align-items: center;
-    background: rgba(15, 26, 15, 0.85);
-    border: 1px solid rgba(111, 207, 151, 0.25);
-    border-radius: 8px;
-    padding: 5px 10px;
-    margin-top: 8px;
-    margin-bottom: 4px;
-    font-size: 11px;
-    font-weight: 500;
-    color: #6fcf97;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    line-height: 1.4;
-    user-select: none;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-    backdrop-filter: blur(8px);
-    width: fit-content;
+    display: inline-flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    gap: 10px !important;
+    align-items: center !important;
+    align-self: flex-start !important;
+    background: #0f1a0f !important;
+    border: 1px solid #1a3a1a !important;
+    border-radius: 8px !important;
+    padding: 6px 12px !important;
+    margin-top: 10px !important;
+    margin-bottom: 6px !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: #6fcf97 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    line-height: 1.4 !important;
+    user-select: none !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+    z-index: 9999 !important;
+    position: relative !important;
+    width: fit-content !important;
   `
-  updateBadgeContent(badge, emissions)
+  badge.innerHTML = getBadgeHTML(emissions)
   return badge
 }
 
-function updateBadgeContent(badge, emissions) {
-  const mWh = (emissions.energy * 1000).toFixed(3)
-  const mgCO2 = (emissions.co2 * 1000).toFixed(3)
-  const mLWater = emissions.water.toFixed(2)
-
-  badge.innerHTML = `
-    <span title="Water Footprint">💧 ${mLWater} mL</span>
-    <span title="Energy Consumed">⚡ ${mWh} mWh</span>
-    <span title="Carbon Emissions">🌿 ${mgCO2} mg CO₂</span>
-    <span style="color: #64748b; font-size: 10px;" title="Estimated Tokens">${emissions.tokens.toLocaleString()} tok</span>
-  `
-}
-
 let isInitialScan = true
+setTimeout(() => {
+  isInitialScan = false
+}, 1500)
 
 function processResponses() {
   const calc = getCalculator()
-  const responses = document.querySelectorAll("message-content .markdown, model-response .markdown")
+  const responses = document.querySelectorAll("message-content, model-response")
 
-  responses.forEach(el => {
-    const container = el.closest("message-content, model-response") || el
-    const text = extractCleanText(el)
-    if (!text || text.length < 8) return
+  responses.forEach(container => {
+    const text = getCleanMessageText(container)
+    if (!text || text.length < 5) return
 
     const tokens = calc.countTokens(text)
     if (tokens === 0) return
@@ -89,34 +96,30 @@ function processResponses() {
     emissions.timestamp = Date.now()
 
     let badge = container.querySelector(".eco-prompt-badge")
-
     if (!badge) {
       badge = createBadge(emissions)
       container.appendChild(badge)
     } else {
-      updateBadgeContent(badge, emissions)
+      badge.innerHTML = getBadgeHTML(emissions)
     }
 
-    // Historical message protection on first load
-    if (isInitialScan && !container.dataset.ecoSaved) {
-      container.dataset.ecoSaved = "historical"
+    // Historical message protection on initial load
+    if (isInitialScan) {
+      container.dataset.ecoLastSavedTokens = String(tokens)
       return
     }
 
-    // Gemini doesn't have an explicit streaming attribute, so debounce 1.8s of stable text
+    // Debounce 1.5s of stable text before saving
     clearTimeout(container._ecoSaveTimer)
-    container.dataset.ecoSaved = "pending"
     container._ecoSaveTimer = setTimeout(() => {
-      if (container.dataset.ecoSaved === "pending") {
-        container.dataset.ecoSaved = "true"
-        chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions })
+      if (container.dataset.ecoLastSavedTokens !== String(tokens)) {
+        container.dataset.ecoLastSavedTokens = String(tokens)
+        chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions }, (res) => {
+          console.log("🌿 EcoPrompt: Gemini emission recorded!", emissions.tokens, "tokens", res)
+        })
       }
-    }, 1800)
+    }, 1500)
   })
-
-  if (isInitialScan) {
-    isInitialScan = false
-  }
 }
 
 let typingTimer
