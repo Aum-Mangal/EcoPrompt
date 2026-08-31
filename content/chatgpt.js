@@ -1,7 +1,7 @@
 // EcoPrompt: ChatGPT Content Script (v2.0.0)
 console.log("🌿 EcoPrompt: ChatGPT content script loaded (v2.0.0)")
 
-// Fallback calculator in case utils/calculator.js runs in an isolated context
+// Shared calculator with embedded fallback
 function getCalculator() {
   if (typeof globalThis !== "undefined" && globalThis.EcoPromptCalculator) {
     return globalThis.EcoPromptCalculator
@@ -27,7 +27,6 @@ function getCalculator() {
 // Extract message text safely from the live DOM without cloneNode issues
 function getCleanMessageText(el) {
   if (!el) return ""
-  // Target markdown / prose container if present, else fallback to turn container
   const target = el.querySelector(".markdown, .prose, [class*='markdown']") || el
   const raw = target.innerText || target.textContent || ""
   // Strip out any badge text if badge happens to be inside
@@ -60,19 +59,19 @@ function createBadge(emissions) {
     align-items: center !important;
     align-self: flex-start !important;
     background: #0f1a0f !important;
-    border: 1px solid #1a3a1a !important;
+    border: 1px solid #22c55e !important;
     border-radius: 8px !important;
     padding: 6px 12px !important;
     margin-top: 10px !important;
-    margin-bottom: 6px !important;
+    margin-bottom: 8px !important;
     font-size: 11px !important;
     font-weight: 500 !important;
-    color: #6fcf97 !important;
+    color: #4ade80 !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     line-height: 1.4 !important;
     user-select: none !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
-    z-index: 9999 !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4) !important;
+    z-index: 1000 !important;
     position: relative !important;
     width: fit-content !important;
   `
@@ -80,9 +79,28 @@ function createBadge(emissions) {
   return badge
 }
 
-// Find all assistant turn containers across all ChatGPT DOM versions
+// Injects the badge into the turn's message column right above the action buttons
+function injectBadge(el, badge) {
+  const markdown = el.querySelector(".markdown, .prose, [class*='markdown']")
+  if (markdown) {
+    const actionRow = el.querySelector("div.mt-1, div[class*='mt-1'], .flex.gap-3")
+    if (actionRow && actionRow.parentNode) {
+      actionRow.parentNode.insertBefore(badge, actionRow)
+      return
+    }
+    if (markdown.nextSibling) {
+      markdown.parentNode.insertBefore(badge, markdown.nextSibling)
+      return
+    }
+    markdown.parentNode.appendChild(badge)
+    return
+  }
+  el.appendChild(badge)
+}
+
+// Find all assistant turn containers across all ChatGPT DOM structures
 function getAssistantContainers() {
-  // 1. Canonical data attribute used across ChatGPT versions
+  // 1. Primary selector for assistant messages in ChatGPT
   const standard = document.querySelectorAll('[data-message-author-role="assistant"]')
   if (standard.length > 0) return Array.from(standard)
 
@@ -97,34 +115,61 @@ function getAssistantContainers() {
   if (list.length > 0) return list
 
   // 3. Fallback: elements with agent-turn class
-  const agentTurns = document.querySelectorAll('.agent-turn')
+  const agentTurns = document.querySelectorAll(".agent-turn")
   if (agentTurns.length > 0) return Array.from(agentTurns)
 
   return []
 }
 
-// Check if page is actively generating
+// Checks if ChatGPT is actively generating
 function isPageGenerating() {
   return Boolean(
     document.querySelector('button[data-testid="stop-button"]') ||
-    document.querySelector('button[aria-label*="Stop"]') ||
-    document.querySelector('button[data-testid*="stop"]') ||
+    document.querySelector('button[aria-label*="Stop generating"]') ||
+    document.querySelector('button[aria-label*="Stop streaming"]') ||
     document.querySelector('.result-streaming') ||
-    document.querySelector('.streaming-caret') ||
-    document.querySelector('span[class*="cursor"]')
+    document.querySelector('.result-thinking')
   )
 }
 
-let isInitialScan = true
+// Keep track of pre-existing historical messages on initial page load
+let initialTurnsRecorded = false
+const initialTurns = new WeakSet()
 
-// Reset initial scan status on page load
-setTimeout(() => {
-  isInitialScan = false
-}, 1500)
+function recordInitialTurns() {
+  const containers = getAssistantContainers()
+  containers.forEach(el => initialTurns.add(el))
+  initialTurnsRecorded = true
+}
+
+// Schedule debounce completion save
+function scheduleSave(el, tokens, emissions) {
+  if (el._ecoSaveTimer) clearTimeout(el._ecoSaveTimer)
+
+  el._ecoSaveTimer = setTimeout(() => {
+    // If still actively generating, reschedule
+    if (isPageGenerating()) {
+      scheduleSave(el, tokens, emissions)
+      return
+    }
+
+    // Save only once when generation finishes
+    if (el.dataset.ecoSaved !== "true") {
+      el.dataset.ecoSaved = "true"
+      chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions }, (res) => {
+        console.log("🌿 EcoPrompt: ChatGPT emission recorded!", emissions.tokens, "tokens", res)
+      })
+    }
+  }, 1500)
+}
 
 function processResponses() {
   const calc = getCalculator()
   const responses = getAssistantContainers()
+
+  if (!initialTurnsRecorded && responses.length > 0) {
+    recordInitialTurns()
+  }
 
   responses.forEach(el => {
     const text = getCleanMessageText(el)
@@ -136,51 +181,34 @@ function processResponses() {
     const emissions = calc.calculateEmissions(tokens, "chatgpt")
     emissions.timestamp = Date.now()
 
-    // 1. INJECT / UPDATE BADGE
+    // 1. INJECT OR LIVE-UPDATE BADGE
     let badge = el.querySelector(".eco-prompt-badge")
     if (!badge) {
       badge = createBadge(emissions)
-      el.appendChild(badge)
+      injectBadge(el, badge)
     } else {
       badge.innerHTML = getBadgeHTML(emissions)
     }
 
-    // 2. PRE-EXISTING / HISTORICAL MESSAGE PROTECTION
-    // If this is the initial scan on page load, mark past messages as already counted
-    if (isInitialScan) {
-      el.dataset.ecoLastSavedTokens = String(tokens)
+    // 2. HISTORICAL MESSAGE PROTECTION
+    // Messages that were already on screen before user prompted are marked saved without sending message
+    if (initialTurns.has(el) && !el.dataset.ecoSaved) {
+      el.dataset.ecoSaved = "true"
       return
     }
 
-    // 3. RECORDING COMPLETED RESPONSES
-    // Clear debounce timer if new tokens keep arriving
-    if (el._ecoSaveTimer) clearTimeout(el._ecoSaveTimer)
-
-    el._ecoSaveTimer = setTimeout(() => {
-      // If still actively generating, don't finalize yet
-      if (isPageGenerating()) return
-
-      // Save only once per final token count
-      if (el.dataset.ecoLastSavedTokens !== String(tokens)) {
-        el.dataset.ecoLastSavedTokens = String(tokens)
-        chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions }, (res) => {
-          console.log("🌿 EcoPrompt: ChatGPT emission recorded!", emissions.tokens, "tokens", res)
-        })
-      }
-    }, 1500) // 1.5s stability confirms generation has completed
+    // 3. LIVE SESSION MESSAGE SAVING
+    scheduleSave(el, tokens, emissions)
   })
 }
 
-// Listen for SPA chat navigation (when user clicks another conversation in sidebar)
+// Handle SPA URL changes (when user clicks another conversation in the sidebar)
 let lastUrl = location.href
 setInterval(() => {
   if (location.href !== lastUrl) {
     lastUrl = location.href
-    isInitialScan = true
-    setTimeout(() => {
-      isInitialScan = false
-    }, 1500)
-    processResponses()
+    initialTurnsRecorded = false
+    setTimeout(processResponses, 500)
   }
 }, 500)
 
