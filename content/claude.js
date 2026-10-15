@@ -1,92 +1,144 @@
-console.log("EcoPrompt: Claude content script loaded")
+// EcoPrompt: Claude Content Script (v2.0.0)
+console.log("🌿 EcoPrompt: Claude content script loaded (v2.0.0)")
 
-function countTokens(text) {
-  if (!text) return 0
-  return Math.ceil(text.length / 4)
-}
-
-const FACTORS = {
-  energyPerToken: 0.0000025,
-  carbonIntensity: 0.386,
-  waterIntensity: 1.8,
-}
-
-function calculateEmissions(tokens) {
-  const energy = tokens * FACTORS.energyPerToken
-  const co2 = energy * FACTORS.carbonIntensity
-  const water = energy * FACTORS.waterIntensity * 1000
-  return {
-    platform: "claude",
-    tokens,
-    energy: parseFloat(energy.toFixed(6)),
-    co2: parseFloat(co2.toFixed(6)),
-    water: parseFloat(water.toFixed(4)),
+function getCalculator() {
+  if (typeof globalThis !== "undefined" && globalThis.EcoPromptCalculator) {
+    return globalThis.EcoPromptCalculator
   }
+  return {
+    countTokens: (text) => (text ? Math.ceil(text.trim().length / 4) : 0),
+    calculateEmissions: (tokens, platform) => {
+      const energy = tokens * 0.0000025
+      const co2 = energy * 0.386
+      const water = energy * 1.8 // mL (1.8 mL / Wh)
+      return {
+        platform: platform || "claude",
+        platformName: "Claude",
+        tokens,
+        energy: parseFloat(energy.toFixed(6)),
+        co2: parseFloat(co2.toFixed(6)),
+        water: parseFloat(water.toFixed(4)),
+      }
+    }
+  }
+}
+
+function getCleanMessageText(el) {
+  if (!el) return ""
+  const target = el.querySelector(".font-claude-message, .prose") || el
+  const raw = target.innerText || target.textContent || ""
+  return raw.replace(/💧[\s\S]*?tok(ens)?/gi, "").trim()
+}
+
+function getBadgeHTML(emissions) {
+  const water = (emissions.water || 0).toFixed(2)
+  const energyMWh = ((emissions.energy || 0) * 1000).toFixed(3)
+  const co2Mg = ((emissions.co2 || 0) * 1000).toFixed(3)
+  const tokens = (emissions.tokens || 0).toLocaleString()
+
+  return `
+    <span title="Water Footprint">💧 ${water} mL</span>
+    <span title="Energy Consumed">⚡ ${energyMWh} mWh</span>
+    <span title="Carbon Emissions">🌿 ${co2Mg} mg CO₂</span>
+    <span style="color: #64748b; font-size: 10px;" title="Estimated Tokens">${tokens} tok</span>
+  `
 }
 
 function createBadge(emissions) {
   const badge = document.createElement("div")
+  badge.className = "eco-prompt-badge"
+  badge.setAttribute("data-eco-badge", "true")
   badge.style.cssText = `
-    display: inline-flex;
-    gap: 10px;
-    align-items: center;
-    background: #0f1a0f;
-    border: 1px solid #1a3a1a;
-    border-radius: 8px;
-    padding: 6px 12px;
-    margin-top: 8px;
-    font-size: 12px;
-    color: #6fcf97;
-    font-family: -apple-system, sans-serif;
+    display: inline-flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    gap: 10px !important;
+    align-items: center !important;
+    align-self: flex-start !important;
+    background: #0f1a0f !important;
+    border: 1px solid #1a3a1a !important;
+    border-radius: 8px !important;
+    padding: 6px 12px !important;
+    margin-top: 10px !important;
+    margin-bottom: 6px !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: #6fcf97 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    line-height: 1.4 !important;
+    user-select: none !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+    z-index: 9999 !important;
+    position: relative !important;
+    width: fit-content !important;
   `
-  badge.innerHTML = `
-    <span>💧 ${emissions.water.toFixed(2)} ml</span>
-    <span>⚡ ${(emissions.energy * 1000).toFixed(4)} mWh</span>
-    <span>🌿 ${(emissions.co2 * 1000).toFixed(4)} mg CO₂</span>
-    <span style="color:#444;font-size:10px">${emissions.tokens} tokens</span>
-  `
+  badge.innerHTML = getBadgeHTML(emissions)
   return badge
 }
 
-function processResponse(el) {
-  if (el.dataset.ecoProcessed) return
-  el.dataset.ecoProcessed = "true"
+let isInitialScan = true
+setTimeout(() => {
+  isInitialScan = false
+}, 1500)
 
-  const text = el.innerText
-  if (!text || text.length < 10) return
+function processClaudeTurn(el) {
+  const calc = getCalculator()
+  const isStreaming = el.getAttribute("data-is-streaming") === "true"
+  const text = getCleanMessageText(el)
 
-  const tokens = countTokens(text)
-  const emissions = calculateEmissions(tokens)
+  if (!text || text.length < 5) return
+
+  const tokens = calc.countTokens(text)
+  if (tokens === 0) return
+
+  const emissions = calc.calculateEmissions(tokens, "claude")
   emissions.timestamp = Date.now()
 
-  const badge = createBadge(emissions)
-  el.appendChild(badge)
+  let badge = el.querySelector(".eco-prompt-badge")
+  if (!badge) {
+    badge = createBadge(emissions)
+    el.appendChild(badge)
+  } else {
+    badge.innerHTML = getBadgeHTML(emissions)
+  }
 
-  chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions })
-  console.log("🌿 EcoPrompt Claude badge injected:", emissions)
+  // Pre-existing message protection on initial load
+  if (isInitialScan) {
+    el.dataset.ecoLastSavedTokens = String(tokens)
+    return
+  }
+
+  // Save when completed (streaming finished)
+  if (!isStreaming && el.dataset.ecoLastSavedTokens !== String(tokens)) {
+    el.dataset.ecoLastSavedTokens = String(tokens)
+    chrome.runtime.sendMessage({ type: "SAVE_EMISSION", data: emissions }, (res) => {
+      console.log("🌿 EcoPrompt: Claude emission recorded!", emissions.tokens, "tokens", res)
+    })
+  }
 }
 
 function scanForResponses() {
-  const responses = document.querySelectorAll('[data-is-streaming="false"]')
-  console.log("EcoPrompt: Found", responses.length, "Claude responses")
-  responses.forEach(el => processResponse(el))
+  const responses = document.querySelectorAll('[data-is-streaming]')
+  responses.forEach(el => processClaudeTurn(el))
 }
 
+let typingTimer
 function init() {
-  // Scan after delays to catch responses at different load times
-  setTimeout(scanForResponses, 1000)
-  setTimeout(scanForResponses, 3000)
-  setTimeout(scanForResponses, 5000)
+  scanForResponses()
 
   const observer = new MutationObserver(() => {
-    scanForResponses()
+    clearTimeout(typingTimer)
+    typingTimer = setTimeout(() => {
+      scanForResponses()
+    }, 250)
   })
 
   observer.observe(document.body, {
     childList: true,
     subtree: true,
+    characterData: true,
     attributes: true,
-    attributeFilter: ['data-is-streaming']
+    attributeFilter: ["data-is-streaming"]
   })
 }
 

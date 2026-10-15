@@ -1,10 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
-  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Plus Jakarta Sans", sans-serif;
 }
 
 body {
@@ -33,17 +31,15 @@ body {
 
 .earth-container {
   position: absolute;
-  top: -120px; /* Pushed up like the Earth Wallet image */
+  top: -120px;
   left: 50%;
   transform: translateX(-50%);
   width: 340px;
   height: 340px;
   border-radius: 50%;
-  /* High-res public domain earth map */
-  background: url('https://upload.wikimedia.org/wikipedia/commons/thumb/c/cd/Land_ocean_ice_cloud_2048.jpg/1024px-Land_ocean_ice_cloud_2048.jpg');
+  background-image: url('./assets/earth-map.jpg');
   background-size: 200% 100%;
   animation: revolve 60s linear infinite;
-  /* 3D Shadows: Inner dark shadow for night side, inner light for atmosphere, outer glow */
   box-shadow: 
     inset -40px -40px 60px rgba(2, 6, 15, 0.95), 
     inset 10px 10px 30px rgba(255, 255, 255, 0.2), 
